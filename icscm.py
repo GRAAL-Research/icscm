@@ -1,6 +1,6 @@
 """
-    FlorenceSetCoveringMachine1 -- A casuality oriented version of the Set Covering Machine in Python
-    Copyright (C) 2022 Thibaud Godon, Florence Clerc, Alexandre Drouin
+    Invariant Causal Set Covering Machine -- A invariance-oriented version of the Set Covering Machine in Python
+    Copyright (C) 2023 Thibaud Godon, Alexandre Drouin
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -26,7 +26,7 @@ import numpy as np
 import pandas as pd
 
 from sklearn.base import BaseEstimator, ClassifierMixin
-from sklearn.metrics import accuracy_score, confusion_matrix
+from sklearn.metrics import accuracy_score
 from sklearn.utils.validation import (
     check_X_y,
     check_array,
@@ -237,7 +237,7 @@ class DecisionStump(BaseRule):
         )
 
 
-class BaseInvariantCausalSCM1(BaseEstimator, ClassifierMixin):
+class InvariantCausalSCM(BaseEstimator, ClassifierMixin):
     def __init__(
         self,
         p=1.0,
@@ -255,8 +255,8 @@ class BaseInvariantCausalSCM1(BaseEstimator, ClassifierMixin):
                 "wrong model_type: {}, only conjunction is supported".format(model_type)
             )
         self.max_rules = max_rules
-        self.threshold = threshold
         self.resample_rules = resample_rules
+        self.threshold = threshold
         self.stopping_method = stopping_method
         self.random_state = random_state
 
@@ -265,6 +265,9 @@ class BaseInvariantCausalSCM1(BaseEstimator, ClassifierMixin):
             "p": self.p,
             "model_type": self.model_type,
             "max_rules": self.max_rules,
+            "resample_rules": self.resample_rules,
+            "threshold": self.threshold,
+            "stopping_method": self.stopping_method,
             "random_state": self.random_state,
         }
 
@@ -354,18 +357,6 @@ class BaseInvariantCausalSCM1(BaseEstimator, ClassifierMixin):
             )
         )
 
-        # Invert the classes if we are learning a disjunction
-        # logging.debug("Preprocessing example labels")
-        # pos_ex_idx, neg_ex_idx = self._get_example_idx_by_class(y)
-        # y = np.zeros(len(y), dtype=np.int)
-        # y[pos_ex_idx] = 1
-        # y[neg_ex_idx] = 0
-
-        # Presort all the features
-        ##logging.debug("Presorting all features")
-        ##X_argsort_by_feature_T = np.argsort(X, axis=0).T.copy()
-        # print('X', X)
-        # print('y', y)
         if isinstance(X, pd.DataFrame):
             X = X.to_numpy()
         elif isinstance(X, np.ndarray):
@@ -427,7 +418,6 @@ class BaseInvariantCausalSCM1(BaseEstimator, ClassifierMixin):
         residuals = (big_pred_matrix != remaining_y[:, None]).astype(int)
         stopping_criterion = False
         n_rules_with_indep_neg_residuals = [len(all_possible_rules)]
-        n_rules_with_indep_pos_residuals = [len(all_possible_rules)]
         # self.threshold = 0.005
         # print('self.threshold', self.threshold)
 
@@ -436,15 +426,20 @@ class BaseInvariantCausalSCM1(BaseEstimator, ClassifierMixin):
             error_by_rule = residuals.sum(axis=0)
             # print('error_by_rule', error_by_rule)
             n_rules_with_indep_neg_residuals.append(0)
-            n_rules_with_indep_pos_residuals.append(0)
             # print('residuals.shape', residuals.shape)
             # print('best rule  by accuracy :', all_possible_rules[error_by_rule.argmin()])
             # We seek rules with residuals that are invariant to the environment, so high p-values
-            p_vals_neg_leafs, p_vals_pos_leafs = [], []
+            p_vals_neg_leafs = []
             utilities = []
             scores_of_rules = []
             # print('residuals.shape[1], len(all_possible_rules)', residuals.shape[1], len(all_possible_rules))
             assert residuals.shape[1] == len(all_possible_rules)
+            y_e_df = pd.DataFrame(
+                    {
+                        "y": remaining_y,
+                        "e": env_of_remaining_examples,
+                    }
+                )
             for i in range(residuals.shape[1]):
                 res = residuals[:, i]  # erreurs de la regle
                 utility_true_negatives = np.logical_not(
@@ -456,21 +451,12 @@ class BaseInvariantCausalSCM1(BaseEstimator, ClassifierMixin):
                 )
                 rule_feat_id, rule_threshold, rule_kind = all_possible_rules[i]
                 utilities.append(utility)
-                y_e_df = pd.DataFrame(
-                    {
-                        "y": remaining_y,
-                        "e": env_of_remaining_examples,
-                        "rule_pred": big_pred_matrix[:, i],
-                    }
-                )
+                y_e_df["rule_pred"] = big_pred_matrix[:, i]
                 # print('res_e_df.shape', res_e_df.shape)
                 neg_leaf_y_e_df = y_e_df[y_e_df["rule_pred"] == 0]
-                pos_leaf_y_e_df = y_e_df[y_e_df["rule_pred"] == 1]
                 # print('neg_res_e_df.shape', neg_res_e_df.shape)
                 if len(neg_leaf_y_e_df) == 0:
                     p_value_neg_leaf = 1
-                elif len(pos_leaf_y_e_df) == 0:
-                    p_value_pos_leaf = 1
                 else:
                     with warnings.catch_warnings():
                         warnings.filterwarnings("ignore")
@@ -478,36 +464,24 @@ class BaseInvariantCausalSCM1(BaseEstimator, ClassifierMixin):
                         p_value_neg_leaf = chi2_independence(
                             data=neg_leaf_y_e_df, x="y", y="e"
                         )[-1]["pval"][0]
-                        p_value_pos_leaf = chi2_independence(
-                            data=pos_leaf_y_e_df, x="y", y="e"
-                        )[-1]["pval"][0]
                 p_vals_neg_leafs.append(p_value_neg_leaf)
-                p_vals_pos_leafs.append(p_value_pos_leaf)
                 n_rules_with_indep_neg_residuals[-1] = n_rules_with_indep_neg_residuals[
                     -1
                 ] + int(p_value_neg_leaf > self.threshold)
-                n_rules_with_indep_pos_residuals[-1] = n_rules_with_indep_pos_residuals[
-                    -1
-                ] + int(p_value_pos_leaf > self.threshold)
                 score_of_rule = int(p_value_neg_leaf > self.threshold) * utility
                 scores_of_rules.append(score_of_rule)
                 # print('rule = feature {} {:2} {}     p_value = {:3f} |{:10}|     utility = {:5d} |{:10}|      score = {:5d}'.format(rule_feat_id, '>' if rule_kind == 'greater' else '<=', rule_threshold, p_value, '#'*int(10*p_value), int(utility), '+'*int(10*ponderated_utility), int(score_of_rule)))
             p_vals_neg_leafs = np.array(p_vals_neg_leafs)
-            p_vals_pos_leafs = np.array(p_vals_pos_leafs)
             best_rule_id = np.array(scores_of_rules).argmax()
-            # print('np.array(scores_of_rules).argmax()', np.array(scores_of_rules).argmax())
             best_rule_score = scores_of_rules[best_rule_id]
             best_rule_feat_id, best_rule_threshold, best_rule_kind = all_possible_rules[
                 best_rule_id
             ]
-            # update possible rules:
-            # print('p_values', p_vals)
 
             mask = np.zeros(big_pred_matrix.shape, dtype=bool)
             updated_all_possible_rules = []
             assert (
                 len(p_vals_neg_leafs)
-                == len(p_vals_pos_leafs)
                 == len(all_possible_rules)
             )
             # print(' --- updating possible rules ---')
@@ -556,13 +530,6 @@ class BaseInvariantCausalSCM1(BaseEstimator, ClassifierMixin):
                 threshold=best_rule_threshold,
                 kind=best_rule_kind,
             )
-
-            # print('FNre', FNre)
-            # print('sum(FNre)', sum(FNre))
-            # print('TNre', TNre)
-            # print('sum(TNre)', sum(TNre))
-            # if sum(TNre) == sum(FNre) == 0:
-            #    break
 
             # print("The best rule has utility {}".format(best_utility))
             # print("The best rule has score {}".format(best_rule_score))
@@ -745,47 +712,3 @@ class BaseInvariantCausalSCM1(BaseEstimator, ClassifierMixin):
 
     def __str__(self):
         return _class_to_string(self)
-
-
-class InvariantCausalSCM1(BaseInvariantCausalSCM1):
-    """
-    A Set Covering Machine classifier
-
-    [1]_ Marchand, M., & Shawe-Taylor, J. (2002). The set covering machine.
-    Journal of Machine Learning Research, 3(Dec), 723-746.
-
-    Parameters:
-    -----------
-    p: float
-        The trade-off parameter for the utility function (suggestion: use values >= 1).
-    model_type: str, default="conjunction"
-        The model type (conjunction or disjunction).
-    max_rules: int, default=10
-        The maximum number of rules in the model.
-    random_state: int, np.random.RandomState or None, default=None
-        The random state.
-
-    """
-
-    def __init__(
-        self,
-        p=1.0,
-        model_type=str("conjunction"),
-        max_rules=10,
-        resample_rules=False,
-        threshold=0.05,
-        stopping_method="independance_y_e",
-        random_state=None,
-    ):
-        super(InvariantCausalSCM1, self).__init__(
-            p=p,
-            model_type=model_type,
-            max_rules=max_rules,
-            resample_rules=False,
-            threshold=threshold,
-            stopping_method=stopping_method,
-            random_state=random_state,
-        )
-
-    def _get_best_utility_rules(self, X, y, X_argsort_by_feature_T, example_idx):
-        return find_max_utility(self.p, X, y, X_argsort_by_feature_T, example_idx)
