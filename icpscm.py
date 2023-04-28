@@ -37,6 +37,9 @@ from warnings import warn
 
 from pingouin import chi2_independence
 import warnings
+from itertools import chain, combinations  # for powerset
+from gsq import ci_tests  # conditional independence tests
+from pyscm import SetCoveringMachineClassifier
 
 
 def _class_to_string(instance):
@@ -237,27 +240,19 @@ class DecisionStump(BaseRule):
         )
 
 
-class InvariantCausalSCM(BaseEstimator, ClassifierMixin):
+class InvariantCausalPredictionSetCoveringMachine(BaseEstimator, ClassifierMixin):
     def __init__(
         self,
         p=1.0,
         model_type="conjunction",
         max_rules=10,
-        resample_rules=False,
         threshold=0.05,
-        stopping_method="no_more_negatives",
         random_state=None,
     ):
         self.p = p
         self.model_type = model_type
-        if model_type != "conjunction":
-            raise ValueError(
-                "wrong model_type: {}, only conjunction is supported".format(model_type)
-            )
         self.max_rules = max_rules
-        self.resample_rules = resample_rules
         self.threshold = threshold
-        self.stopping_method = stopping_method
         self.random_state = random_state
 
     def get_params(self, deep=True):
@@ -265,9 +260,7 @@ class InvariantCausalSCM(BaseEstimator, ClassifierMixin):
             "p": self.p,
             "model_type": self.model_type,
             "max_rules": self.max_rules,
-            "resample_rules": self.resample_rules,
             "threshold": self.threshold,
-            "stopping_method": self.stopping_method,
             "random_state": self.random_state,
         }
 
@@ -278,7 +271,8 @@ class InvariantCausalSCM(BaseEstimator, ClassifierMixin):
 
     def fit(self, X, y, tiebreaker=None, iteration_callback=None, **fit_params):
         """
-        Fit a SCM model.
+        Find the set of causal parents of the target variable.
+        Fit a SCM model on this set.
 
         Parameters:
         -----------
@@ -359,8 +353,7 @@ class InvariantCausalSCM(BaseEstimator, ClassifierMixin):
         remaining_P = y
 
         # first column of X: environment
-        env_of_remaining_examples = X[:, 0]
-        # print("env_of_remaining_examples", env_of_remaining_examples)
+        env_of_examples = X[:, 0]
 
         # Extract features only
         X_original_with_env = (
@@ -368,236 +361,70 @@ class InvariantCausalSCM(BaseEstimator, ClassifierMixin):
         )  # useful for prediction for feature importance computation
         X = X[:, 1:]
         # print('Extract features only, X.shape = ', X.shape)
-        remaining_y = y
 
-        all_possible_rules = []
-        for feat_id in range(X.shape[1]):
-            for threshold in list(set(X[:, feat_id])):
-                for kind in ["greater", "less_equal"]:
-                    all_possible_rules.append((feat_id, threshold, kind))
-
-        # print('Number of examples per environment', np.bincount(env_of_remaining_examples))
-        # print('Number of examples per label', np.bincount(remaining_y))
-
-        big_pred_matrix = np.zeros((X.shape[0], len(all_possible_rules)), dtype=int)
-        # print('X[1]', X[1])
-        for sample_id in range(X.shape[0]):
-            x = X[sample_id]
-            for rule_id in range(len(all_possible_rules)):
-                # print(all_possible_rules[rule_id])
-                rule_feat_id, rule_threshold, rule_kind = all_possible_rules[rule_id]
-                sample_feat_value = x[rule_feat_id]
-                if rule_kind == "greater":
-                    pred = 1 if (sample_feat_value > rule_threshold) else 0
-                elif rule_kind == "less_equal":
-                    pred = 1 if (sample_feat_value <= rule_threshold) else 0
-                else:
-                    raise ValueError("unexpected rule kind:", rule_kind)
-                big_pred_matrix[sample_id, rule_id] = pred
-
-        # Calculate residuals
-        residuals = (big_pred_matrix != remaining_y[:, None]).astype(int)
-        stopping_criterion = False
-        n_rules_with_indep_neg_residuals = [len(all_possible_rules)]
-        # self.threshold = 0.005
-        # print('self.threshold', self.threshold)
-
-        while not (stopping_criterion):
-            # while (len(remaining_y) - sum(remaining_y)) > 0 and len(self.model_) < self.max_rules:
-            error_by_rule = residuals.sum(axis=0)
-            # print('error_by_rule', error_by_rule)
-            n_rules_with_indep_neg_residuals.append(0)
-            # print('residuals.shape', residuals.shape)
-            # print('best rule  by accuracy :', all_possible_rules[error_by_rule.argmin()])
-            # We seek rules with residuals that are invariant to the environment, so high p-values
-            p_vals_neg_leafs = []
-            utilities = []
-            scores_of_rules = []
-            # print('residuals.shape[1], len(all_possible_rules)', residuals.shape[1], len(all_possible_rules))
-            assert residuals.shape[1] == len(all_possible_rules)
-            y_e_df = pd.DataFrame(
-                {
-                    "y": remaining_y,
-                    "e": env_of_remaining_examples,
-                }
+        variables_idx = list(range(X_original_with_env.shape[1]))[
+            1:
+        ]  # because feature 0 in X_original_with_env is the environment
+        sets = list(
+            chain.from_iterable(
+                combinations(variables_idx, r) for r in range(X.shape[1])
             )
-            for i in range(residuals.shape[1]):
-                res = residuals[:, i]  # erreurs de la regle
-                utility_true_negatives = np.logical_not(
-                    np.logical_or(res, remaining_y)
-                ).astype(int)
-                utility_false_negatives = np.logical_and(res, remaining_y).astype(int)
-                utility = sum(utility_true_negatives) - self.p * sum(
-                    utility_false_negatives
+        )
+        sets_that_creates_indep = []
+        conditional_indep_calculation_df = pd.DataFrame(
+            X_original_with_env, columns=["e"] + variables_idx
+        )
+        conditional_indep_calculation_df["y"] = y
+        y_position = conditional_indep_calculation_df.columns.get_loc("y")
+        e_position = conditional_indep_calculation_df.columns.get_loc("e")
+        # print('e_position', e_position)
+        # print('y_position', y_position)
+        # print(list(conditional_indep_calculation_df))
+        for s in sets:
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore")
+                p_value = ci_tests.ci_test_dis(
+                    conditional_indep_calculation_df.values,
+                    e_position,
+                    y_position,
+                    list(s),
                 )
-                rule_feat_id, rule_threshold, rule_kind = all_possible_rules[i]
-                utilities.append(utility)
-                y_e_df["rule_pred"] = big_pred_matrix[:, i]
-                # print('res_e_df.shape', res_e_df.shape)
-                neg_leaf_y_e_df = y_e_df[y_e_df["rule_pred"] == 0]
-                # print('neg_res_e_df.shape', neg_res_e_df.shape)
-                if len(neg_leaf_y_e_df) == 0:
-                    p_value_neg_leaf = 1
-                else:
-                    with warnings.catch_warnings():
-                        warnings.filterwarnings("ignore")
-                        # p value computed on the residuals of the negative leaf of the rule
-                        p_value_neg_leaf = chi2_independence(
-                            data=neg_leaf_y_e_df, x="y", y="e"
-                        )[-1]["pval"][0]
-                p_vals_neg_leafs.append(p_value_neg_leaf)
-                n_rules_with_indep_neg_residuals[-1] = n_rules_with_indep_neg_residuals[
-                    -1
-                ] + int(p_value_neg_leaf > self.threshold)
-                score_of_rule = int(p_value_neg_leaf > self.threshold) * utility
-                scores_of_rules.append(score_of_rule)
-                # print('rule = feature {} {:2} {}     p_value = {:3f} |{:10}|     utility = {:5d} |{:10}|      score = {:5d}'.format(rule_feat_id, '>' if rule_kind == 'greater' else '<=', rule_threshold, p_value, '#'*int(10*p_value), int(utility), '+'*int(10*ponderated_utility), int(score_of_rule)))
-            p_vals_neg_leafs = np.array(p_vals_neg_leafs)
-            best_rule_id = np.array(scores_of_rules).argmax()
-            best_rule_score = scores_of_rules[best_rule_id]
-            best_rule_feat_id, best_rule_threshold, best_rule_kind = all_possible_rules[
-                best_rule_id
-            ]
-
-            mask = np.zeros(big_pred_matrix.shape, dtype=bool)
-            updated_all_possible_rules = []
-            assert len(p_vals_neg_leafs) == len(all_possible_rules)
-            # print(' --- updating possible rules ---')
-            for i, rule in enumerate(all_possible_rules):
-                # print('rule', rule)
-                if rule[0] != best_rule_feat_id:
-                    if self.resample_rules:
-                        updated_all_possible_rules.append(rule)
-                    elif p_vals_neg_leafs[i] > self.threshold:
-                        updated_all_possible_rules.append(rule)
-            # print('len(updated_all_possible_rules)', len(updated_all_possible_rules))
-            ##if (len(updated_all_possible_rules) == 0):
-            ##	break
-            # columns_to_keep = np.array([rule[0] for rule in updated_all_possible_rules])
-            columns_to_keep = np.array(
-                [(rule in updated_all_possible_rules) for rule in all_possible_rules]
+            if p_value > self.threshold:
+                sets_that_creates_indep.append(s)
+        # print('sets_that_creates_indep', sets_that_creates_indep)
+        # intersection of sets:
+        if len(sets_that_creates_indep) == 0:
+            intersection_sets_that_creates_indep = []
+        else:
+            intersection_sets_that_creates_indep = list(
+                set.intersection(*map(set, sets_that_creates_indep))
             )
-            predictions_of_selected_rule = big_pred_matrix[:, best_rule_id]
-            classified_neg_examples = [
-                (r == p == 0)
-                for r, p in zip(
-                    residuals[:, best_rule_id], predictions_of_selected_rule
-                )
-            ]
-            # print('sum(predictions_of_selected_rule), sum(residuals[:, best_rule_id]), len(residuals[:, best_rule_id]), classified_neg_examples', sum(predictions_of_selected_rule), sum(residuals[:, best_rule_id]), len(residuals[:, best_rule_id]), sum(classified_neg_examples))
-            # if (sum(residuals[:, best_rule_id]) == len(residuals[:, best_rule_id])) or (sum(classified_neg_examples) == 0):
-            if sum(classified_neg_examples) == 0:
-                break
-            samples_to_keep = np.array(predictions_of_selected_rule).astype(bool)
-            for i in range(big_pred_matrix.shape[0]):
-                if samples_to_keep[i]:
-                    mask[i] = columns_to_keep
-            new_dimensions = (sum(samples_to_keep), sum(columns_to_keep))
-            # print('new_dimensions', new_dimensions)
-            updated_big_pred_matrix = big_pred_matrix[mask].reshape(new_dimensions)
-            updated_residuals = residuals[mask].reshape(new_dimensions)
-            remaining_y = remaining_y[samples_to_keep]
-            env_of_remaining_examples = env_of_remaining_examples[samples_to_keep]
-            big_pred_matrix = updated_big_pred_matrix
-            residuals = updated_residuals
-            all_possible_rules = updated_all_possible_rules
+        # print('intersection_sets_that_creates_indep', intersection_sets_that_creates_indep)
 
-            global_best_rule_feat_id = best_rule_feat_id + 1
-            stump = DecisionStump(
-                feature_idx=global_best_rule_feat_id,
-                threshold=best_rule_threshold,
-                kind=best_rule_kind,
-            )
-
-            # print("The best rule has utility {}".format(best_utility))
-            # print("The best rule has score {}".format(best_rule_score))
-            self._add_attribute_to_model(stump)
-
-            stopping_criterion = False
-            if len(self.model_) >= self.max_rules:
-                # print(
-                #    "len(self.model_) >= self.max_rules",
-                #    len(self.model_),
-                #    self.max_rules,
-                #    "stopping",
-                # )
-                stopping_criterion = True
-            elif len(remaining_y) == 0:
-                # print("len(remaining_y) == 0", len(remaining_y), "stopping")
-                stopping_criterion = True
-            elif len(all_possible_rules) == 0:
-                # print(
-                #    "len(all_possible_rules) == 0", len(all_possible_rules), "stopping"
-                # )
-                stopping_criterion = True
-            else:
-                if self.stopping_method == "no_more_negatives":
-                    # print(
-                    #    "self.stopping_method == no_more_negatives",
-                    #    (len(remaining_y) == sum(remaining_y)),
-                    #    "stopping if True",
-                    # )
-                    stopping_criterion = len(remaining_y) == sum(
-                        remaining_y
-                    )  # only positive examples remaining
-                elif self.stopping_method == "independance_y_e":
-                    assert len(remaining_y) == len(env_of_remaining_examples)
-                    y_e_df = pd.DataFrame(
-                        {"remaining_y": remaining_y, "e": env_of_remaining_examples}
-                    )
-                    with warnings.catch_warnings():
-                        warnings.filterwarnings("ignore")
-                        p_value_stopping = chi2_independence(
-                            data=y_e_df, x="remaining_y", y="e"
-                        )[-1]["pval"][0]
-                    stopping_criterion = p_value_stopping > self.threshold
-                    # print(
-                    #    "(p_value_stopping > self.threshold)",
-                    #    (p_value_stopping > self.threshold),
-                    #    "stopping if True",
-                    # )
-                else:
-                    raise ValueError(
-                        "unexpected stopping_criterion", self.stopping_method
-                    )
-
-            logging.debug(
-                "Discarding all examples that the rule classifies as negative"
-            )
-
-            # print("There are {} examples remaining ({} negatives)".format(sum(remaining_N) + sum(remaining_P), sum(remaining_N)))
-            logging.debug(
-                "There are {} examples remaining ({} negatives)".format(
-                    sum(remaining_N) + sum(remaining_P), sum(remaining_N)
-                )
-            )
-
-            iteration_callback(self.model_)
-
-            # print('#####################################################################################')
-            # print('len(self.model_)', len(self.model_))
-            # print('self.model_', self.model_)
-            # print('#####################################################################################')
+        # Calculate classic SCM training set made of noly parent variables
+        X_restricted_to_parents = np.zeros(X_original_with_env.shape)
+        for i in intersection_sets_that_creates_indep:
+            X_restricted_to_parents[:, i] = X_original_with_env[:, i]
+        model = SetCoveringMachineClassifier(
+            p=self.p,
+            model_type=self.model_type,
+            max_rules=self.max_rules,
+            random_state=self.random_state,
+        )
+        model.fit(X_restricted_to_parents, y)
+        self.model_ = model
+        # print('model_.model_', model.model_)
 
         logging.debug("Training completed")
-        # print(' *** trained FSCM1 : ')n_rules_with_indep_neg_residuals
-        # print(rule)
-        # print('    rule # : feat_id {} is {} than {}'.format(rule))
-
-        self.n_rules_with_indep_neg_residuals = n_rules_with_indep_neg_residuals
 
         logging.debug("Calculating rule importances")
-        # Definition: how often each rule outputs a value that causes the value of the model to be final
-        final_outcome = 0 if self.model_type == "conjunction" else 1
-        total_outcome = (
-            self.model_.predict(X_original_with_env) == final_outcome
-        ).sum()  # n times the model outputs the final outcome
-        self.rule_importances = np.array(
-            [
-                (r.classify(X_original_with_env) == final_outcome).sum() / total_outcome
-                for r in self.model_.rules
+        if len(intersection_sets_that_creates_indep) == 0:
+            self.feature_importances_ = [0] * X_original_with_env.shape[1]
+        else:
+            self.feature_importances_ = [
+                int(i in intersection_sets_that_creates_indep)
+                for i in range(X_original_with_env.shape[1])
             ]
-        )  # contribution of each rule
         logging.debug("Done.")
 
         return self
@@ -617,7 +444,7 @@ class InvariantCausalSCM(BaseEstimator, ClassifierMixin):
             The predicted class for each example.
 
         """
-        check_is_fitted(self, ["model_", "rule_importances", "classes_"])
+        check_is_fitted(self, ["model_", "feature_importances_", "classes_"])
         X = check_array(X)
         return self.classes_[self.model_.predict(X)]
 
@@ -640,7 +467,7 @@ class InvariantCausalSCM(BaseEstimator, ClassifierMixin):
             "SetCoveringMachines do not support probabilistic predictions. The returned values will be zero or one.",
             RuntimeWarning,
         )
-        check_is_fitted(self, ["model_", "rule_importances", "classes_"])
+        check_is_fitted(self, ["model_", "feature_importances_", "classes_"])
         X = check_array(X)
         pos_proba = self.classes_[self.model_.predict(X)]
         neg_proba = 1.0 - pos_proba
@@ -663,7 +490,7 @@ class InvariantCausalSCM(BaseEstimator, ClassifierMixin):
             The proportion of correctly classified examples.
 
         """
-        check_is_fitted(self, ["model_", "rule_importances", "classes_"])
+        check_is_fitted(self, ["model_", "feature_importances_", "classes_"])
         X, y = check_X_y(X, y)
         return accuracy_score(y_true=y, y_pred=self.predict(X))
 

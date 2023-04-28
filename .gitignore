@@ -1,3 +1,29 @@
+FlorenceSCM1.py
+FlorenceSCM1min.py
+FlorenceSCM2.py
+algos_benchmark.ipynb
+algos_benchmark_2.ipynb
+algos_benchmark_3.ipynb
+algos_benchmark_4.ipynb
+ci_test.py
+generate_data.ipynb
+graph-4-variables.png
+graph-6-variables.png
+icp-exp-env/
+icp/
+invariant-best-minimal-schema.png
+pyscm/
+residualSCM.py
+residualSCM1filter.py
+residualSCMneg.py
+robustSCM.py
+scratch_data_generator.ipynb
+y_noise = 0.05, Xc_noise = 0.05.png
+y_noise = 0.05, Xc_noise = 0.1.png
+y_noise = 0.1, Xc_noise = 0.05.png
+y_noise = 0.1, Xc_noise = 0.1.png
+
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
