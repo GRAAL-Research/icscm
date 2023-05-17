@@ -290,6 +290,8 @@ class InvariantCausalPredictionSetCoveringMachine(BaseEstimator, ClassifierMixin
         """
         random_state = check_random_state(self.random_state)
 
+        
+
         if self.model_type == "conjunction":
             self._add_attribute_to_model = self._append_conjunction_model
             self._get_example_idx_by_class = self._get_example_idx_by_class_conjunction
@@ -383,7 +385,7 @@ class InvariantCausalPredictionSetCoveringMachine(BaseEstimator, ClassifierMixin
         for s in sets:
             with warnings.catch_warnings():
                 warnings.filterwarnings("ignore")
-                p_value = ci_tests.ci_test_dis(
+                p_value = ci_tests.ci_test_bin(
                     conditional_indep_calculation_df.values,
                     e_position,
                     y_position,

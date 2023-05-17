@@ -25,6 +25,8 @@ import logging
 import numpy as np
 import pandas as pd
 
+from datetime import datetime
+
 from sklearn.base import BaseEstimator, ClassifierMixin
 from sklearn.metrics import accuracy_score
 from sklearn.utils.validation import (
@@ -243,10 +245,15 @@ class InvariantCausalPredictionDecisionTree(BaseEstimator, ClassifierMixin):
         # print('e_position', e_position)
         # print('y_position', y_position)
         # print(list(conditional_indep_calculation_df))
+        print("number of sets to explore =", len(sets))
+        steps = [int((len(sets) / 10) * i) for i in range(1, 11)]
+        i=0
         for s in sets:
+            i+=1
+            exec_time_1 = datetime.now()
             with warnings.catch_warnings():
                 warnings.filterwarnings("ignore")
-                p_value = ci_tests.ci_test_dis(
+                p_value = ci_tests.ci_test_bin(
                     conditional_indep_calculation_df.values,
                     e_position,
                     y_position,
@@ -254,6 +261,11 @@ class InvariantCausalPredictionDecisionTree(BaseEstimator, ClassifierMixin):
                 )
             if p_value > self.threshold:
                 sets_that_creates_indep.append(s)
+            if (i in steps) or (len(s) > 5):
+                print("step", i, "/", len(sets))
+                print('last evaluated set=', s)
+                exec_time_2 = datetime.now()
+                print('last ci_test execution time=', (exec_time_2 - exec_time_1).total_seconds(), 'seconds')
         # print('sets_that_creates_indep', sets_that_creates_indep)
         # intersection of sets:
         if len(sets_that_creates_indep) == 0:

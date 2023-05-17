@@ -20,7 +20,6 @@ from __future__ import print_function, division, absolute_import, unicode_litera
 
 from six import iteritems
 
-import math
 import logging
 import numpy as np
 import pandas as pd
@@ -35,8 +34,12 @@ from sklearn.utils.validation import (
 )
 from warnings import warn
 
-from pingouin import chi2_independence
+#from pingouin import chi2_independence
+from scipy.stats.contingency import expected_freq
+from scipy.stats import power_divergence
 import warnings
+
+from io import StringIO
 
 
 def _class_to_string(instance):
@@ -294,6 +297,19 @@ class InvariantCausalSCM(BaseEstimator, ClassifierMixin):
             Returns self.
 
         """
+        self.stream = StringIO()
+        #self.handler = logging.StreamHandler(self.stream)
+        #self.log = logging.getLogger('mylogger')
+        #self.log.setLevel(logging.INFO)
+        #for handler in self.log.handlers: 
+        #    self.log.removeHandler(handler)
+        #self.log.addHandler(self.handler)
+        #def testLog(self):
+        #self.assertEqual(self.stream.getvalue(), 'test')
+        #def tearDown(self):
+        #self.log.removeHandler(self.handler)
+        #self.handler.close()
+
         random_state = check_random_state(self.random_state)
 
         if self.model_type == "conjunction":
@@ -310,7 +326,8 @@ class InvariantCausalSCM(BaseEstimator, ClassifierMixin):
             iteration_callback = lambda x: None
 
         # Parse additional fit parameters
-        logging.debug("Parsing additional fit parameters")
+        self.stream.write('\n')
+        self.stream.write("Parsing additional fit parameters")
         utility_function_additional_args = {}
         if fit_params is not None:
             for key, value in iteritems(fit_params):
@@ -318,7 +335,8 @@ class InvariantCausalSCM(BaseEstimator, ClassifierMixin):
                     utility_function_additional_args[key[9:]] = value
 
         # Validate the input data
-        logging.debug("Validating the input data")
+        self.stream.write('\n')
+        self.stream.write("Validating the input data")
         # X, y = check_X_y(X, y)
         # X = np.asarray(X, dtype=np.double)
         self.classes_, y, total_n_ex_by_class = np.unique(
@@ -326,7 +344,8 @@ class InvariantCausalSCM(BaseEstimator, ClassifierMixin):
         )
         if len(self.classes_) != 2:
             raise ValueError("y must contain two unique classes.")
-        logging.debug(
+        self.stream.write('\n')
+        self.stream.write(
             "The data contains {0:d} examples. Negative class is {1!s} (n: {2:d}) and positive class is {3!s} (n: {4:d}).".format(
                 len(y),
                 self.classes_[0],
@@ -351,12 +370,14 @@ class InvariantCausalSCM(BaseEstimator, ClassifierMixin):
             raise ValueError("unexpected type for y:", type(X))
 
         # Create an empty model
-        logging.debug("Initializing empty model")
+        self.stream.write('\n')
+        self.stream.write("Initializing empty model")
         self.model_ = ConjunctionModel()
-        logging.debug("Training start")
+        self.stream.write('\n')
+        self.stream.write("Training start")
         ones = np.ones(len(y))
-        remaining_N = ones - y  # remaining negative examples
-        remaining_P = y
+        #remaining_N = ones - y  # remaining negative examples
+        #remaining_P = y
 
         # first column of X: environment
         env_of_remaining_examples = X[:, 0]
@@ -404,7 +425,7 @@ class InvariantCausalSCM(BaseEstimator, ClassifierMixin):
 
         while not (stopping_criterion):
             # while (len(remaining_y) - sum(remaining_y)) > 0 and len(self.model_) < self.max_rules:
-            error_by_rule = residuals.sum(axis=0)
+            #error_by_rule = residuals.sum(axis=0)
             # print('error_by_rule', error_by_rule)
             n_rules_with_indep_neg_residuals.append(0)
             # print('residuals.shape', residuals.shape)
@@ -415,6 +436,8 @@ class InvariantCausalSCM(BaseEstimator, ClassifierMixin):
             scores_of_rules = []
             # print('residuals.shape[1], len(all_possible_rules)', residuals.shape[1], len(all_possible_rules))
             assert residuals.shape[1] == len(all_possible_rules)
+            self.stream.write('\n')
+            self.stream.write(f'len(all_possible_rules) = {len(all_possible_rules)}')
             y_e_df = pd.DataFrame(
                 {
                     "y": remaining_y,
@@ -439,41 +462,65 @@ class InvariantCausalSCM(BaseEstimator, ClassifierMixin):
                 if len(neg_leaf_y_e_df) == 0:
                     p_value_neg_leaf = 1
                 else:
-                    with warnings.catch_warnings():
-                        warnings.filterwarnings("ignore")
-                        # p value computed on the residuals of the negative leaf of the rule
-                        p_value_neg_leaf = chi2_independence(
-                            data=neg_leaf_y_e_df, x="y", y="e"
-                        )[-1]["pval"][0]
+                    observed = pd.crosstab(neg_leaf_y_e_df['y'], neg_leaf_y_e_df['e'])
+                    if observed.size == 0:
+                        raise ValueError("No data; observed has size 0.")
+                    
+                    expected = pd.DataFrame(expected_freq(observed), index=observed.index, columns=observed.columns)
+
+                    ### All count frequencies should be at least 5
+                    #for df, name in zip([observed, expected], ["observed", "expected"]):
+                    #    if (df < 5).any(axis=None):
+                    #        warnings.warn("Low count on {} frequencies.".format(name))
+                    #        print('expected', expected)
+                    #        print('observed', observed)
+
+                    dof = float(expected.size - sum(expected.shape) + expected.ndim - 1)
+
+                    if dof == 1:
+                        # Adjust `observed` according to Yates' correction for continuity.
+                        observed = observed + 0.5 * np.sign(expected - observed)
+
+                    ddof = observed.size - 1 - dof
+                    n = len(remaining_y)
+                    stats = []
+                    lambda_ = 1.0
+                    if dof == 0:
+                        chi2, p_value_neg_leaf, cramer, power = 0.0, 1.0, np.nan, np.nan
+                    else:
+                        chi2, p_value_neg_leaf = power_divergence(observed, expected, ddof=ddof, axis=None, lambda_=lambda_)
                 p_vals_neg_leafs.append(p_value_neg_leaf)
                 n_rules_with_indep_neg_residuals[-1] = n_rules_with_indep_neg_residuals[
                     -1
                 ] + int(p_value_neg_leaf > self.threshold)
                 score_of_rule = int(p_value_neg_leaf > self.threshold) * utility
                 scores_of_rules.append(score_of_rule)
-                # print('rule = feature {} {:2} {}     p_value = {:3f} |{:10}|     utility = {:5d} |{:10}|      score = {:5d}'.format(rule_feat_id, '>' if rule_kind == 'greater' else '<=', rule_threshold, p_value, '#'*int(10*p_value), int(utility), '+'*int(10*ponderated_utility), int(score_of_rule)))
+                self.stream.write('\n')
+                self.stream.write('rule : feature {} {:2} {}     p_value_neg_leaf = {:3f} |{:10}|     utility = {:5d}       score = {:5d}'.format(rule_feat_id, '>' if rule_kind == 'greater' else '<=', rule_threshold, p_value_neg_leaf, '#'*int(10*p_value_neg_leaf), int(utility), int(score_of_rule)))
             p_vals_neg_leafs = np.array(p_vals_neg_leafs)
             best_rule_id = np.array(scores_of_rules).argmax()
             best_rule_score = scores_of_rules[best_rule_id]
             best_rule_feat_id, best_rule_threshold, best_rule_kind = all_possible_rules[
                 best_rule_id
             ]
+            self.stream.write('\n')
+            self.stream.write('selected best rule : "feature {} {:2} {}"'.format(best_rule_feat_id, '>' if best_rule_kind == 'greater' else '<=', best_rule_threshold))
 
             mask = np.zeros(big_pred_matrix.shape, dtype=bool)
-            updated_all_possible_rules = []
-            assert len(p_vals_neg_leafs) == len(all_possible_rules)
-            # print(' --- updating possible rules ---')
-            for i, rule in enumerate(all_possible_rules):
-                # print('rule', rule)
-                if rule[0] != best_rule_feat_id:
-                    if self.resample_rules:
-                        updated_all_possible_rules.append(rule)
-                    elif p_vals_neg_leafs[i] > self.threshold:
-                        updated_all_possible_rules.append(rule)
+            #updated_all_possible_rules = []
+            #assert len(p_vals_neg_leafs) == len(all_possible_rules)
+            ## print(' --- updating possible rules ---')
+            #for i, rule in enumerate(all_possible_rules):
+            #    # print('rule', rule)
+            #    if rule[0] != best_rule_feat_id:
+            #        if self.resample_rules:
+            #            updated_all_possible_rules.append(rule)
+            #        elif p_vals_neg_leafs[i] > self.threshold:
+            #            updated_all_possible_rules.append(rule)
             # print('len(updated_all_possible_rules)', len(updated_all_possible_rules))
+            updated_all_possible_rules = all_possible_rules.copy()
             ##if (len(updated_all_possible_rules) == 0):
             ##	break
-            # columns_to_keep = np.array([rule[0] for rule in updated_all_possible_rules])
             columns_to_keep = np.array(
                 [(rule in updated_all_possible_rules) for rule in all_possible_rules]
             )
@@ -487,13 +534,16 @@ class InvariantCausalSCM(BaseEstimator, ClassifierMixin):
             # print('sum(predictions_of_selected_rule), sum(residuals[:, best_rule_id]), len(residuals[:, best_rule_id]), classified_neg_examples', sum(predictions_of_selected_rule), sum(residuals[:, best_rule_id]), len(residuals[:, best_rule_id]), sum(classified_neg_examples))
             # if (sum(residuals[:, best_rule_id]) == len(residuals[:, best_rule_id])) or (sum(classified_neg_examples) == 0):
             if sum(classified_neg_examples) == 0:
+                self.stream.write('\n')
+                self.stream.write('no more negative examples: breaking the while loop')
                 break
             samples_to_keep = np.array(predictions_of_selected_rule).astype(bool)
             for i in range(big_pred_matrix.shape[0]):
                 if samples_to_keep[i]:
                     mask[i] = columns_to_keep
             new_dimensions = (sum(samples_to_keep), sum(columns_to_keep))
-            # print('new_dimensions', new_dimensions)
+            self.stream.write('\n')
+            self.stream.write('new_dimensions = {}'.format(new_dimensions))
             updated_big_pred_matrix = big_pred_matrix[mask].reshape(new_dimensions)
             updated_residuals = residuals[mask].reshape(new_dimensions)
             remaining_y = remaining_y[samples_to_keep]
@@ -509,68 +559,91 @@ class InvariantCausalSCM(BaseEstimator, ClassifierMixin):
                 kind=best_rule_kind,
             )
 
-            # print("The best rule has utility {}".format(best_utility))
-            # print("The best rule has score {}".format(best_rule_score))
+            self.stream.write('\n')
+            self.stream.write("The best rule has score {}".format(best_rule_score))
             self._add_attribute_to_model(stump)
 
             stopping_criterion = False
+            self.stream.write('\n')
+            self.stream.write('evaluation of stopping conditions : ')
+            self.stream.write('\n')
+            self.stream.write(f"len(self.model_) >= self.max_rules : {len(self.model_) >= self.max_rules} (len(self.model_) = {len(self.model_)}, self.max_rules = {self.max_rules}")
+            self.stream.write('\n')
+            self.stream.write(f'len(remaining_y) == 0 : {len(remaining_y) == 0}')
+            self.stream.write('\n')
+            self.stream.write(f'len(all_possible_rules) == 0 : {len(all_possible_rules) == 0}')
+            
             if len(self.model_) >= self.max_rules:
-                # print(
-                #    "len(self.model_) >= self.max_rules",
-                #    len(self.model_),
-                #    self.max_rules,
-                #    "stopping",
-                # )
+                self.stream.write('\n')
+                self.stream.write(f"len(self.model_) >= self.max_rules {len(self.model_)}, {self.max_rules} stopping")
                 stopping_criterion = True
             elif len(remaining_y) == 0:
-                # print("len(remaining_y) == 0", len(remaining_y), "stopping")
+                self.stream.write('\n')
+                self.stream.write(f"len(remaining_y) == 0 : {len(remaining_y)} stopping")
                 stopping_criterion = True
             elif len(all_possible_rules) == 0:
-                # print(
-                #    "len(all_possible_rules) == 0", len(all_possible_rules), "stopping"
-                # )
+                self.stream.write('\n')
+                self.stream.write(
+                   f"len(all_possible_rules) == 0 : {len(all_possible_rules)} stopping")
                 stopping_criterion = True
             else:
                 if self.stopping_method == "no_more_negatives":
-                    # print(
-                    #    "self.stopping_method == no_more_negatives",
-                    #    (len(remaining_y) == sum(remaining_y)),
-                    #    "stopping if True",
-                    # )
+                    self.stream.write('\n')
+                    self.stream.write(f"self.stopping_method == no_more_negatives {(len(remaining_y) == sum(remaining_y))} stopping if True")
                     stopping_criterion = len(remaining_y) == sum(
                         remaining_y
                     )  # only positive examples remaining
                 elif self.stopping_method == "independance_y_e":
+                    self.stream.write('\n')
+                    self.stream.write(f'independance_y_e')
                     assert len(remaining_y) == len(env_of_remaining_examples)
                     y_e_df = pd.DataFrame(
                         {"remaining_y": remaining_y, "e": env_of_remaining_examples}
                     )
-                    with warnings.catch_warnings():
-                        warnings.filterwarnings("ignore")
-                        p_value_stopping = chi2_independence(
-                            data=y_e_df, x="remaining_y", y="e"
-                        )[-1]["pval"][0]
+
+
+                    observed = pd.crosstab(y_e_df['remaining_y'], y_e_df['e'])
+                    if observed.size == 0:
+                        raise ValueError("No data; observed has size 0.")
+                    
+                    expected = pd.DataFrame(expected_freq(observed), index=observed.index, columns=observed.columns)
+
+                    ## All count frequencies should be at least 5
+                    #for df, name in zip([observed, expected], ["observed", "expected"]):
+                    #    if (df < 5).any(axis=None):
+                    #        warnings.warn("Low count on {} frequencies.".format(name))
+
+                    dof = float(expected.size - sum(expected.shape) + expected.ndim - 1)
+
+                    if dof == 1:
+                        # Adjust `observed` according to Yates' correction for continuity.
+                        observed = observed + 0.5 * np.sign(expected - observed)
+
+                    ddof = observed.size - 1 - dof
+                    n = len(remaining_y)
+                    stats = []
+                    lambda_ = 1.0
+                    if dof == 0:
+                        chi2, p_value_stopping, cramer, power = 0.0, 1.0, np.nan, np.nan
+                    else:
+                        chi2, p_value_stopping = power_divergence(observed, expected, ddof=ddof, axis=None, lambda_=lambda_)
+                        dof_cramer = min(expected.shape) - 1
                     stopping_criterion = p_value_stopping > self.threshold
-                    # print(
-                    #    "(p_value_stopping > self.threshold)",
-                    #    (p_value_stopping > self.threshold),
-                    #    "stopping if True",
-                    # )
+                    self.stream.write('\n')
+                    self.stream.write(f"(p_value_stopping = {p_value_stopping} | self.threshold = {self.threshold}")
+                    self.stream.write('\n')
+                    self.stream.write(f"(p_value_stopping > self.threshold) {(p_value_stopping > self.threshold)} (stopping if True)")
                 else:
                     raise ValueError(
                         "unexpected stopping_criterion", self.stopping_method
                     )
 
-            logging.debug(
+            self.stream.write('\n')
+            self.stream.write(
                 "Discarding all examples that the rule classifies as negative"
             )
 
-            # print("There are {} examples remaining ({} negatives)".format(sum(remaining_N) + sum(remaining_P), sum(remaining_N)))
-            logging.debug(
-                "There are {} examples remaining ({} negatives)".format(
-                    sum(remaining_N) + sum(remaining_P), sum(remaining_N)
-                )
-            )
+            self.stream.write('\n')
 
             iteration_callback(self.model_)
 
@@ -579,14 +652,16 @@ class InvariantCausalSCM(BaseEstimator, ClassifierMixin):
             # print('self.model_', self.model_)
             # print('#####################################################################################')
 
-        logging.debug("Training completed")
+        self.stream.write('\n')
+        self.stream.write("Training completed")
         # print(' *** trained FSCM1 : ')n_rules_with_indep_neg_residuals
         # print(rule)
         # print('    rule # : feat_id {} is {} than {}'.format(rule))
 
         self.n_rules_with_indep_neg_residuals = n_rules_with_indep_neg_residuals
 
-        logging.debug("Calculating rule importances")
+        self.stream.write('\n')
+        self.stream.write("Calculating rule importances")
         # Definition: how often each rule outputs a value that causes the value of the model to be final
         final_outcome = 0 if self.model_type == "conjunction" else 1
         total_outcome = (
@@ -598,7 +673,11 @@ class InvariantCausalSCM(BaseEstimator, ClassifierMixin):
                 for r in self.model_.rules
             ]
         )  # contribution of each rule
-        logging.debug("Done.")
+        self.stream.write('\n')
+        self.stream.write("Done.")
+
+        #print('log_stream.getvalue()', self.log_stream.getvalue())
+        #self.handler.flush()
 
         return self
 
