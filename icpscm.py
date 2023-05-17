@@ -1,6 +1,6 @@
 """
     Invariant Causal Set Covering Machine -- A invariance-oriented version of the Set Covering Machine in Python
-    Copyright (C) 2023 Thibaud Godon, Alexandre Drouin
+    Copyright (C) 2023 
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
