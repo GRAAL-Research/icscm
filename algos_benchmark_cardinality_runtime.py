@@ -111,23 +111,18 @@ param_grids = {
 
 
 def compute_features_usage_df(algo, data_df, repetition, do_grid_search=False, param_grids=None):
-    #features_usage_df_list = []
     perf_df = pd.DataFrame(columns=['algo', 'score', 'metric', 'type', 'split'])
     row_i = 0
     ##for repetition in range(len(generated_df_list)):
     print('  repetition', repetition)
-    ##df2 = generated_df_list[repetition].copy()
     df2 = data_df.copy()
     y = df2['Y'].values
     del df2['Y']
     X = df2.values
-    n_samples_per_env_df = df2[df2['E'] == 0].shape[0]
     features_names = list(df2)
     true_causal_features = ['Xa1', 'Xa2']
     true_causal_features_vector = [int(f in true_causal_features) for f in features_names]
-    #print('features_names', features_names)
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=11+repetition)
-    #features_usage_df = pd.DataFrame(columns=algos, index=features_names)
     print(algo)
     model = init_model(algo)
     # grid search for best parameters
@@ -142,7 +137,6 @@ def compute_features_usage_df(algo, data_df, repetition, do_grid_search=False, p
         grid_result = grid.fit(X_train, y_train)
         tuned_hyperparameters = grid_result.best_params_
         print('tuned_hyperparameters', tuned_hyperparameters)
-        #cv_results_df = pd.DataFrame(grid_result.cv_results_)  # convert GS results to a pandas dataframe
         model.set_params(**tuned_hyperparameters)  # set best params
         model.set_params(random_state=11)  # set random state
     # time 1 :
@@ -157,14 +151,14 @@ def compute_features_usage_df(algo, data_df, repetition, do_grid_search=False, p
     row_i += 1
     perf_df.loc[row_i] = [algo, accuracy_score(y_train, train_pred), 'accuracy', 'train', repetition]
     row_i += 1
-    if algo in ['SCM', 'ICSCM', 'ICSCMfast']:
+    if algo in ['SCM', 'ICSCM']:
         features_used = [0]*len(features_names)
         if hasattr(model, 'rule_importances'):
             for i in range(len(model.rule_importances)):
                 feat_name = features_names[model.model_.rules[i].feature_idx]
                 if model.rule_importances[i] > 0:
                     features_used[model.model_.rules[i].feature_idx] = model.rule_importances[i]              
-    elif algo in ['DT', 'ICP+DT', 'ICP+SCM']:
+    elif algo in ['DT', 'ICP+DT', 'ICP+DT2', 'ICP+SCM']:
         features_used = model.feature_importances_
     else:
         raise Exception('algo not implemented')
@@ -180,16 +174,13 @@ def compute_features_usage_df(algo, data_df, repetition, do_grid_search=False, p
     row_i += 1
     perf_df.loc[row_i] = [algo, (t2 - t1).total_seconds(), 't2-t1', 'fit time', repetition]
     row_i += 1
-    #features_usage_df['feature'] = features_usage_df.index
-    #features_usage_df['split'] = [repetition]*features_usage_df.shape[0]
-    #features_usage_df_list.append(features_usage_df)
-    ##features_usage_df = pd.concat(features_usage_df_list, axis=0)
     n_random_var = sum([f.startswith('Xb') for f in features_names])
     print('n_random_var', n_random_var)
     perf_df['n_var'] = [n_random_var]*perf_df.shape[0]
+    n_samples_per_env = df2[df2['E'] == 0].shape[0]
     perf_df['n_samples'] = [n_samples_per_env]*perf_df.shape[0]
     # save perf_df
-    save_perf_path = os.path.join('cardinality-exp-results', f'perf_df_{algo}_{n_random_var}_{repetition}')
+    save_perf_path = os.path.join('cardinality-exp-results', f'perf_df_{algo}_{n_samples_per_env}_{n_random_var}_{repetition}')
     perf_df.to_csv(save_perf_path, index=False)
     #return perf_df
 
@@ -197,12 +188,10 @@ noise_on_y = 0.05
 noise_on_Xc = 0.05
 
 perf_df_list = []
-#n_samples_per_env_list = [1000, 10000]
 n_samples_per_env_list = [10000]
-#algos = ['SCM', 'DT', 'ICP+DT', 'ICP+SCM', 'ICSCM']
-algos = ['ICP+DT']
-random_vars_list = [7]
-repetitions_range = list(range(1))
+algos = ['SCM', 'DT', 'ICP+DT', 'ICP+SCM', 'ICSCM']
+random_vars_list = [1,2,3,4,5,6,7]
+repetitions_range = list(range(100))
 
 df_results_list = []
 #list files in directory:
@@ -214,7 +203,6 @@ if len(df_results_list) > 0:
 else:
     big_perf_df = pd.DataFrame(columns=['algo', 'score', 'metric', 'type', 'split', 'n_var', 'n_samples'])
 
-#algos = ['ICP+DT']
 for n_samples_per_env in n_samples_per_env_list:
     big_perf_df_n_samples = big_perf_df[big_perf_df['n_samples'] == n_samples_per_env]
     for n_random_var in random_vars_list:
@@ -235,42 +223,9 @@ for n_samples_per_env in n_samples_per_env_list:
                 for repetition in to_be_done_repetition_range:
                     data_df = compute_dataset(n_samples_per_env=n_samples_per_env, n_random_variables=n_random_var, noise_on_y=noise_on_y, noise_on_Xc=noise_on_Xc, random_seed=repetition)
                     generated_df_dict[repetition] = data_df
-                    #perf_df = compute_features_usage_df(algos, data_df, repetition=repetition, do_grid_search=True, param_grids=param_grids)
-                #perf_df_list = compute_features_usage_df(algos, data_df, repetition=repetition, do_grid_search=True, param_grids=param_grids)
-                #perf_df_list = Parallel(n_jobs=5, verbose=5)(delayed(compute_features_usage_df)(algos, data_df, repetition=repetition, do_grid_search=True, param_grids=param_grids) for repetition in range(5))
-                Parallel(n_jobs=1, verbose=5)(delayed(compute_features_usage_df)(algo, generated_df_dict[repetition], repetition=repetition, do_grid_search=True, param_grids=param_grids) for repetition in to_be_done_repetition_range)
-                #perf_df['n_var'] = [n_random_var]*perf_df.shape[0]
-                #perf_df_list.append(perf_df)
+                Parallel(n_jobs=-1, verbose=5)(delayed(compute_features_usage_df)(algo, generated_df_dict[repetition], repetition=repetition, do_grid_search=True, param_grids=param_grids) for repetition in to_be_done_repetition_range)
                 exec_time_2 = datetime.now()
                 print('execution time=', (exec_time_2 - exec_time_1).total_seconds(), 'seconds')
                 print(exec_time_2 - exec_time_1)
 
 
-#old_perf_df = pd.read_csv('n_features_stats_df.csv')
-#perf_df_list.append(old_perf_df)
-
-#big_perf_df = pd.concat(perf_df_list)
-#big_perf_df.to_csv('cardinality_stats_df_loc_test_' + '_'.join([str(e) for e in random_vars_list]) + '.csv', index=False)
-
-
-# to plot the results :
-"""
-big_perf_df = pd.read_csv('n_features_stats_df.csv')
-fig, ax = plt.subplots(nrows=3, ncols=1, sharex=True, sharey=False, figsize=(6, 7))
-perf_df_runtime = big_perf_df[big_perf_df['type'] == 'fit time']
-ax[0].set_title('runtime (in seconds to fit one model)')
-sns.lineplot(data=perf_df_runtime, x='n_var', y='score', hue='algo', markers=True, dashes=False, ax=ax[0])
-ax[0].set_yscale('log')
-
-perf_df_causalscore = big_perf_df[big_perf_df['type'] == 'causal']
-ax[1].set_title('causal score')
-sns.lineplot(data=perf_df_causalscore, x='n_var', y='score', hue='algo', markers=True, dashes=False, ax=ax[1])
-
-perf_df_predictive = big_perf_df[big_perf_df['type'] == 'test']
-ax[2].set_title('predictive score (test)')
-sns.lineplot(data=perf_df_predictive, x='n_var', y='score', hue='algo', markers=True, dashes=False, ax=ax[2])
-
-#sns.lineplot(data=perf_df_perf, x='n_var', y='score', hue='algo', markers=True, dashes=False, ax=ax[2])
-plt.xticks(sorted(list(set(big_perf_df['n_var']))))
-plt.show()
-"""
