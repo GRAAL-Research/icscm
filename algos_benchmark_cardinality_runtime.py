@@ -110,10 +110,9 @@ param_grids = {
 }
 
 
-def compute_features_usage_df(algo, data_df, repetition, do_grid_search=False, param_grids=None):
+def compute_features_usage_df(algo, data_df, repetition, do_grid_search=False, param_grids=None, results_dir='.'):
     perf_df = pd.DataFrame(columns=['algo', 'score', 'metric', 'type', 'split'])
     row_i = 0
-    ##for repetition in range(len(generated_df_list)):
     print('  repetition', repetition)
     df2 = data_df.copy()
     y = df2['Y'].values
@@ -141,7 +140,6 @@ def compute_features_usage_df(algo, data_df, repetition, do_grid_search=False, p
         model.set_params(random_state=11)  # set random state
     # time 1 :
     t1 = datetime.now()
-    # activate logging of following line :
     model.fit(X_train, y_train)
     # time after fited :
     t2 = datetime.now()
@@ -163,7 +161,6 @@ def compute_features_usage_df(algo, data_df, repetition, do_grid_search=False, p
     else:
         raise Exception('algo not implemented')
     features_used_binary = [1 if f > 0 else 0 for f in features_used]
-    #features_usage_df[algo] = features_used_binary
     causal_score = int(features_used_binary == true_causal_features_vector)
     print('features_used_binary       ', features_used_binary)
     print('true_causal_features_vector', true_causal_features_vector)
@@ -179,24 +176,27 @@ def compute_features_usage_df(algo, data_df, repetition, do_grid_search=False, p
     perf_df['n_var'] = [n_random_var]*perf_df.shape[0]
     n_samples_per_env = df2[df2['E'] == 0].shape[0]
     perf_df['n_samples'] = [n_samples_per_env]*perf_df.shape[0]
-    # save perf_df
-    save_perf_path = os.path.join('cardinality-exp-results', f'perf_df_{algo}_{n_samples_per_env}_{n_random_var}_{repetition}')
+    idx_features_used_binary_code = sum([2**i*f for i, f in enumerate(features_used_binary)])
+    perf_df['idx_features_used_binary_code'] = [idx_features_used_binary_code]*perf_df.shape[0]
+    print(idx_features_used_binary_code)
+    # saving perf_df :
+    save_perf_path = os.path.join(results_dir, f'perf_df_{algo}_{n_samples_per_env}_{n_random_var}_{repetition}')
     perf_df.to_csv(save_perf_path, index=False)
-    #return perf_df
 
 noise_on_y = 0.05
 noise_on_Xc = 0.05
 
 perf_df_list = []
 n_samples_per_env_list = [10000]
-algos = ['SCM', 'DT', 'ICP+DT', 'ICP+SCM', 'ICSCM']
-random_vars_list = [1,2,3,4,5,6,7]
+algos = ['ICSCM']
+random_vars_list = [2,3,4,5,6,7]
 repetitions_range = list(range(100))
 
 df_results_list = []
+results_dir = 'cardinality-exp-results'
 #list files in directory:
-for file in os.listdir('cardinality-exp-results'):
-    df_loc = pd.read_csv(os.path.join('cardinality-exp-results', file))
+for file in os.listdir(results_dir):
+    df_loc = pd.read_csv(os.path.join(results_dir, file))
     df_results_list.append(df_loc)
 if len(df_results_list) > 0:
     big_perf_df = pd.concat(df_results_list)
@@ -223,9 +223,7 @@ for n_samples_per_env in n_samples_per_env_list:
                 for repetition in to_be_done_repetition_range:
                     data_df = compute_dataset(n_samples_per_env=n_samples_per_env, n_random_variables=n_random_var, noise_on_y=noise_on_y, noise_on_Xc=noise_on_Xc, random_seed=repetition)
                     generated_df_dict[repetition] = data_df
-                Parallel(n_jobs=-1, verbose=5)(delayed(compute_features_usage_df)(algo, generated_df_dict[repetition], repetition=repetition, do_grid_search=True, param_grids=param_grids) for repetition in to_be_done_repetition_range)
+                Parallel(n_jobs=1, verbose=5)(delayed(compute_features_usage_df)(algo, generated_df_dict[repetition], repetition=repetition, do_grid_search=True, param_grids=param_grids, results_dir=results_dir) for repetition in to_be_done_repetition_range)
                 exec_time_2 = datetime.now()
                 print('execution time=', (exec_time_2 - exec_time_1).total_seconds(), 'seconds')
                 print(exec_time_2 - exec_time_1)
-
-
