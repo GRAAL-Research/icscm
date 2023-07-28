@@ -37,7 +37,6 @@ from sklearn.utils.validation import (
 )
 from warnings import warn
 
-from pingouin import chi2_independence
 import warnings
 from itertools import chain, combinations  # for powerset
 from gsq import ci_tests  # conditional independence tests
@@ -163,7 +162,7 @@ class InvariantCausalPredictionDecisionTree(BaseEstimator, ClassifierMixin):
             Returns self.
 
         """
-        random_state = check_random_state(self.random_state)
+        self.random_state = check_random_state(self.random_state)
 
         # Initialize callbacks
         if iteration_callback is None:
@@ -177,10 +176,6 @@ class InvariantCausalPredictionDecisionTree(BaseEstimator, ClassifierMixin):
                 if key[:9] == "utility__":
                     utility_function_additional_args[key[9:]] = value
 
-        # Validate the input data
-        logging.debug("Validating the input data")
-        # X, y = check_X_y(X, y)
-        # X = np.asarray(X, dtype=np.double)
         self.classes_, y, total_n_ex_by_class = np.unique(
             y, return_inverse=True, return_counts=True
         )
@@ -225,7 +220,6 @@ class InvariantCausalPredictionDecisionTree(BaseEstimator, ClassifierMixin):
             X.copy()
         )  # useful for prediction for feature importance computation
         X = X[:, 1:]
-        # print('Extract features only, X.shape = ', X.shape)
 
         variables_idx = list(range(X_original_with_env.shape[1]))[
             1:
@@ -242,15 +236,7 @@ class InvariantCausalPredictionDecisionTree(BaseEstimator, ClassifierMixin):
         conditional_indep_calculation_df["y"] = y
         y_position = conditional_indep_calculation_df.columns.get_loc("y")
         e_position = conditional_indep_calculation_df.columns.get_loc("e")
-        # print('e_position', e_position)
-        # print('y_position', y_position)
-        # print(list(conditional_indep_calculation_df))
-        print("number of sets to explore =", len(sets))
-        steps = [int((len(sets) / 10) * i) for i in range(1, 11)]
-        i=0
         for s in sets:
-            i+=1
-            exec_time_1 = datetime.now()
             with warnings.catch_warnings():
                 warnings.filterwarnings("ignore")
                 p_value = ci_tests.ci_test_bin(
@@ -261,12 +247,10 @@ class InvariantCausalPredictionDecisionTree(BaseEstimator, ClassifierMixin):
                 )
             if p_value > self.threshold:
                 sets_that_creates_indep.append(s)
-            if (i in steps) or (len(s) > 5):
-                print("step", i, "/", len(sets))
-                print('last evaluated set=', s)
-                exec_time_2 = datetime.now()
-                print('last ci_test execution time=', (exec_time_2 - exec_time_1).total_seconds(), 'seconds')
-        # print('sets_that_creates_indep', sets_that_creates_indep)
+                print(f'set={s}, p_value={round(p_value, 6)}                         independent ')
+            else:
+                print(f'set={s}, p_value={round(p_value, 6)}')
+        print('sets_that_creates_indep', sets_that_creates_indep)
         # intersection of sets:
         if len(sets_that_creates_indep) == 0:
             intersection_sets_that_creates_indep = []
@@ -274,7 +258,7 @@ class InvariantCausalPredictionDecisionTree(BaseEstimator, ClassifierMixin):
             intersection_sets_that_creates_indep = list(
                 set.intersection(*map(set, sets_that_creates_indep))
             )
-        # print('intersection_sets_that_creates_indep', intersection_sets_that_creates_indep)
+        print('intersection_sets_that_creates_indep', intersection_sets_that_creates_indep)
 
         # Calculate classic Decision Tree training set made of noly parent variables
         X_restricted_to_parents = np.zeros(X_original_with_env.shape)

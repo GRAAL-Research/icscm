@@ -35,7 +35,6 @@ from sklearn.utils.validation import (
 )
 from warnings import warn
 
-from pingouin import chi2_independence
 import warnings
 from itertools import chain, combinations  # for powerset
 from gsq import ci_tests  # conditional independence tests
