@@ -1,7 +1,10 @@
 # icscm
 Invariant Causal Set Covering Machine
 
-to run experimentation on simulated data:
+Link to the paper : https://arxiv.org/pdf/2306.04777.pdf
+
+
+To run experimentation on simulated data:
 ```
 python experiment.py
 ```
